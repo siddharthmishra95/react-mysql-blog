@@ -9,7 +9,11 @@ A full-stack blog application:
 - **`client/`** — React 18 + React Router 6 frontend, built with **Vite**.
 - **`server/`** — **Express** REST API talking to **MySQL** via `mysql2`
   (raw SQL, connection pool — no ORM).
-- **MySQL** — stores blog posts.
+- **MySQL** — stores users, blog posts, and comments.
+
+Authentication is **JWT-based** (`jsonwebtoken`), with passwords hashed via
+`bcryptjs`. Posts and comments are owned by users; only an owner can edit or
+delete their own content.
 
 The two halves are independent npm packages (each has its own `package.json`).
 There is no root `package.json`; run commands inside `client/` or `server/`.
@@ -23,23 +27,25 @@ react-mysql-blog/
 │   ├── vite.config.js          # dev server + /api proxy → :3001
 │   ├── package.json
 │   └── src/
-│       ├── main.jsx            # entry; mounts <App> in <BrowserRouter>
-│       ├── App.jsx             # route definitions
+│       ├── main.jsx            # entry; wraps <App> in Router + AuthProvider
+│       ├── App.jsx             # route definitions (some behind ProtectedRoute)
 │       ├── index.css           # all app styles (plain CSS)
-│       ├── api/posts.js        # fetch wrappers for the posts API
-│       ├── components/         # Navbar, PostCard, PostForm
-│       └── pages/              # Home, PostDetail, CreatePost, EditPost
+│       ├── api/                # http.js (fetch+JWT helper), posts, auth, comments
+│       ├── context/AuthContext.jsx   # auth state, login/register/logout
+│       ├── components/         # Navbar, PostCard, PostForm, Comments, ProtectedRoute
+│       └── pages/              # Home, PostDetail, CreatePost, EditPost, Login, Register
 ├── server/                     # Express + MySQL API
 │   ├── .env.example            # copy to .env (gitignored)
 │   ├── package.json
 │   └── src/
 │       ├── index.js            # app entry, middleware, route mounting
-│       ├── routes/posts.js     # /api/posts router
-│       ├── controllers/postsController.js   # request handlers + SQL
+│       ├── middleware/auth.js  # signToken() + requireAuth (JWT verify)
+│       ├── routes/             # posts.js, auth.js, comments.js
+│       ├── controllers/        # postsController, authController, commentsController
 │       └── db/
 │           ├── pool.js         # shared mysql2 connection pool
 │           ├── init.js         # `npm run db:init` — creates DB + schema
-│           └── schema.sql      # posts table definition
+│           └── schema.sql      # users, posts, comments tables
 ├── .gitignore
 ├── README.md
 └── CLAUDE.md
@@ -55,7 +61,7 @@ Run the backend and frontend in two terminals. **MySQL must be running.**
 cd server
 npm install
 cp .env.example .env      # edit with your MySQL credentials
-npm run db:init           # create the database + posts table
+npm run db:init           # create the database + tables (users, posts, comments)
 npm run dev               # node --watch, API on http://localhost:3001
 ```
 
@@ -77,22 +83,46 @@ so the frontend calls the API with relative paths and there's no CORS in dev.
 
 ## API surface
 
-Base path `/api/posts` (see `server/src/routes/posts.js`):
+Routes marked 🔒 require a `Authorization: Bearer <token>` header. Write and
+delete operations also enforce **ownership** (403 otherwise).
 
-| Method | Path             | Handler       | Notes                          |
-| ------ | ---------------- | ------------- | ------------------------------ |
-| GET    | `/api/posts`     | `listPosts`   | newest first                   |
-| GET    | `/api/posts/:id` | `getPost`     | 404 if missing                 |
-| POST   | `/api/posts`     | `createPost`  | 400 if title/content blank     |
-| PUT    | `/api/posts/:id` | `updatePost`  | 400 if blank, 404 if missing   |
-| DELETE | `/api/posts/:id` | `deletePost`  | 204 on success                 |
+**Auth** (`server/src/routes/auth.js`):
+
+| Method | Path                  | Notes                                    |
+| ------ | --------------------- | ---------------------------------------- |
+| POST   | `/api/auth/register`  | `{username,email,password}` → `{user,token}`; 409 on duplicate |
+| POST   | `/api/auth/login`     | `{email,password}` → `{user,token}`; 401 on bad creds |
+| GET    | `/api/auth/me` 🔒     | current user                             |
+
+**Posts** (`server/src/routes/posts.js`):
+
+| Method | Path             | Notes                                       |
+| ------ | ---------------- | ------------------------------------------- |
+| GET    | `/api/posts`     | newest first; `author` = owner's username   |
+| GET    | `/api/posts/:id` | 404 if missing                              |
+| POST   | `/api/posts` 🔒  | owner = authenticated user; 400 if blank    |
+| PUT    | `/api/posts/:id` 🔒 | owner only (403); 400 blank, 404 missing  |
+| DELETE | `/api/posts/:id` 🔒 | owner only (403); 204 on success          |
+
+**Comments** (`server/src/routes/comments.js`):
+
+| Method | Path                          | Notes                              |
+| ------ | ----------------------------- | ---------------------------------- |
+| GET    | `/api/posts/:postId/comments` | oldest first; `author` = username  |
+| POST   | `/api/posts/:postId/comments` 🔒 | 400 if blank, 404 if no post    |
+| DELETE | `/api/comments/:id` 🔒        | author only (403); 204 on success  |
 
 `GET /api/health` → `{ "status": "ok" }`. Unknown `/api/*` routes → 404 JSON.
 
 ### Data model (`server/src/db/schema.sql`)
 
-`posts`: `id` (PK, auto-increment), `title`, `content`, `author`
-(default `'Anonymous'`), `created_at`, `updated_at` (auto-updated).
+- **`users`**: `id` (PK), `username` (unique), `email` (unique),
+  `password_hash` (bcrypt), `created_at`.
+- **`posts`**: `id` (PK), `user_id` (FK → users, `ON DELETE CASCADE`),
+  `title`, `content`, `created_at`, `updated_at` (auto-updated). The `author`
+  field in API responses is the owner's `username` via join, not a column.
+- **`comments`**: `id` (PK), `post_id` (FK → posts, cascade), `user_id`
+  (FK → users, cascade), `content`, `created_at`.
 
 ## Conventions
 
@@ -104,15 +134,25 @@ Base path `/api/posts` (see `server/src/routes/posts.js`):
 - **Controllers own the SQL.** Route files only wire paths to handlers; query
   logic and validation live in `controllers/`. Errors are passed to `next(err)`
   and handled by the central error middleware in `index.js`.
-- **Frontend API access** goes through `client/src/api/posts.js` — don't call
-  `fetch` directly from components. It throws `Error(message)` on non-2xx so
-  callers can surface `err.message`.
+- **Auth on the server.** Protect a route by adding the `requireAuth` middleware
+  from `server/src/middleware/auth.js`; it attaches `req.user = { id, username }`.
+  For writes, load the row's `user_id` and compare to `req.user.id`, returning
+  403 on mismatch (see `getOwner` in `postsController.js`). Never trust a
+  `user_id` from the request body — always take it from `req.user`.
+- **Frontend API access** goes through the `client/src/api/` modules, which all
+  call the shared `request()` helper in `api/http.js`. That helper injects the
+  JWT from `localStorage` and throws `Error(message)` (with `.status`) on
+  non-2xx. Don't call `fetch` directly from components.
+- **Auth state** lives in `client/src/context/AuthContext.jsx` (`useAuth()`):
+  `user`, `loading`, `login`, `register`, `logout`. Gate pages with
+  `<ProtectedRoute>` and gate UI (edit/delete buttons) on ownership using
+  `user?.id === row.user_id`.
 - **`PostForm` is shared** by create and edit pages; extend it rather than
   duplicating form logic.
 - **Styling** is plain CSS in `client/src/index.css` using CSS variables. No CSS
   framework or CSS-in-JS.
-- **Secrets** live only in `server/.env` (gitignored). Update `.env.example`
-  whenever you add a new required variable.
+- **Secrets** live only in `server/.env` (gitignored) — including `JWT_SECRET`.
+  Update `.env.example` whenever you add a new required variable.
 
 ## Validating changes
 

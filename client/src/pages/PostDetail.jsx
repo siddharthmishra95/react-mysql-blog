@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { fetchPost, deletePost } from '../api/posts.js';
+import { useAuth } from '../context/AuthContext.jsx';
+import Comments from '../components/Comments.jsx';
 
 export default function PostDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [post, setPost] = useState(null);
   const [status, setStatus] = useState('loading');
   const [error, setError] = useState(null);
@@ -34,22 +37,30 @@ export default function PostDetail() {
   if (status === 'loading') return <p>Loading…</p>;
   if (status === 'error') return <p className="error">{error}</p>;
 
+  const isOwner = user?.id === post.user_id;
+
   return (
     <article className="post-detail">
       <h1>{post.title}</h1>
       <p className="meta">by {post.author}</p>
       <div className="content">{post.content}</div>
       <div className="actions">
-        <Link to={`/posts/${post.id}/edit`} className="btn">
-          Edit
-        </Link>
-        <button onClick={handleDelete} className="btn btn-danger">
-          Delete
-        </button>
+        {isOwner && (
+          <>
+            <Link to={`/posts/${post.id}/edit`} className="btn">
+              Edit
+            </Link>
+            <button onClick={handleDelete} className="btn btn-danger">
+              Delete
+            </button>
+          </>
+        )}
         <Link to="/" className="btn">
           Back
         </Link>
       </div>
+
+      <Comments postId={post.id} />
     </article>
   );
 }

@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import 'dotenv/config';
 import postsRouter from './routes/posts.js';
+import authRouter from './routes/auth.js';
+import { commentsRouter } from './routes/comments.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -14,7 +16,9 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
+app.use('/api/auth', authRouter);
 app.use('/api/posts', postsRouter);
+app.use('/api/comments', commentsRouter);
 
 // 404 for unknown API routes
 app.use('/api', (req, res) => {

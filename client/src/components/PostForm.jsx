@@ -5,7 +5,6 @@ export default function PostForm({ initialValues, onSubmit, submitLabel }) {
   const [values, setValues] = useState({
     title: initialValues?.title || '',
     content: initialValues?.content || '',
-    author: initialValues?.author || '',
   });
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -32,15 +31,6 @@ export default function PostForm({ initialValues, onSubmit, submitLabel }) {
       <label>
         Title
         <input name="title" value={values.title} onChange={handleChange} required />
-      </label>
-      <label>
-        Author
-        <input
-          name="author"
-          value={values.author}
-          onChange={handleChange}
-          placeholder="Anonymous"
-        />
       </label>
       <label>
         Content
