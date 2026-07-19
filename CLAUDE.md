@@ -2,73 +2,138 @@
 
 Guidance for AI assistants (and humans) working in this repository.
 
-## ⚠️ Current state: empty scaffold
+## What this is
 
-As of this writing, **this repository contains no application code**. The only
-tracked files are `README.md` and this `CLAUDE.md`. There is no `package.json`,
-no source tree, no build tooling, and no database schema yet.
+A full-stack blog application:
 
-Before assuming any structure exists, verify with:
+- **`client/`** — React 18 + React Router 6 frontend, built with **Vite**.
+- **`server/`** — **Express** REST API talking to **MySQL** via `mysql2`
+  (raw SQL, connection pool — no ORM).
+- **MySQL** — stores blog posts.
 
-```bash
-git ls-files          # list everything tracked
-ls -la                # inspect the working tree
+The two halves are independent npm packages (each has its own `package.json`).
+There is no root `package.json`; run commands inside `client/` or `server/`.
+
+## Directory layout
+
+```
+react-mysql-blog/
+├── client/                     # React frontend (Vite)
+│   ├── index.html
+│   ├── vite.config.js          # dev server + /api proxy → :3001
+│   ├── package.json
+│   └── src/
+│       ├── main.jsx            # entry; mounts <App> in <BrowserRouter>
+│       ├── App.jsx             # route definitions
+│       ├── index.css           # all app styles (plain CSS)
+│       ├── api/posts.js        # fetch wrappers for the posts API
+│       ├── components/         # Navbar, PostCard, PostForm
+│       └── pages/              # Home, PostDetail, CreatePost, EditPost
+├── server/                     # Express + MySQL API
+│   ├── .env.example            # copy to .env (gitignored)
+│   ├── package.json
+│   └── src/
+│       ├── index.js            # app entry, middleware, route mounting
+│       ├── routes/posts.js     # /api/posts router
+│       ├── controllers/postsController.js   # request handlers + SQL
+│       └── db/
+│           ├── pool.js         # shared mysql2 connection pool
+│           ├── init.js         # `npm run db:init` — creates DB + schema
+│           └── schema.sql      # posts table definition
+├── .gitignore
+├── README.md
+└── CLAUDE.md
 ```
 
-Do **not** invent file paths, scripts, or commands that are not actually
-present. If a task requires code that does not exist yet, create it explicitly
-and update this file to match.
+## Development workflow
 
-## Intended project
+Run the backend and frontend in two terminals. **MySQL must be running.**
 
-The repository name — `react-mysql-blog` — describes the planned application:
-a **blog** with a **React** frontend backed by a **MySQL** database. Nothing
-below is implemented yet; treat it as the target architecture to build toward,
-not as documentation of existing code.
+### Backend (`server/`)
 
-A conventional shape for this stack would be:
+```bash
+cd server
+npm install
+cp .env.example .env      # edit with your MySQL credentials
+npm run db:init           # create the database + posts table
+npm run dev               # node --watch, API on http://localhost:3001
+```
 
-- **Frontend** — React single-page app (likely bootstrapped with Vite or
-  Create React App). Renders posts, handles routing and forms.
-- **Backend/API** — a server (commonly Node.js + Express) exposing a REST or
-  GraphQL API for posts, comments, and auth, talking to MySQL.
-- **Database** — MySQL, storing posts, users, and comments.
+- `npm start` — run without watch.
+- `npm run db:init` — idempotent; safe to re-run (uses `CREATE ... IF NOT EXISTS`).
 
-When you scaffold any of these, keep frontend and backend in clearly separated
-directories (e.g. `client/` and `server/`, or a monorepo with workspaces) and
-record the real choices here.
+### Frontend (`client/`)
 
-## Working conventions
+```bash
+cd client
+npm install
+npm run dev               # Vite dev server on http://localhost:5173
+npm run build             # production build → dist/
+npm run preview           # preview the production build
+```
 
-- **Verify before you document.** This file must always reflect the repository's
-  actual state. When you add tooling, capture the real install/build/test/run
-  commands here rather than generic guesses.
-- **Secrets stay out of git.** Database credentials, connection strings, and API
-  keys belong in a `.env` file that is gitignored, with a committed
-  `.env.example` documenting the required variables. Never hardcode MySQL
-  passwords or commit a real `.env`.
-- **Add a `.gitignore` early.** At minimum ignore `node_modules/`, build output
-  (`dist/`, `build/`), and `.env` before the first dependency install.
-- **Match the surrounding code.** Once code exists, follow its formatting,
-  naming, and structure. Prefer the project's own scripts (lint, test, build)
-  over ad-hoc commands.
+Vite proxies `/api/*` to `http://localhost:3001` (see `client/vite.config.js`),
+so the frontend calls the API with relative paths and there's no CORS in dev.
+
+## API surface
+
+Base path `/api/posts` (see `server/src/routes/posts.js`):
+
+| Method | Path             | Handler       | Notes                          |
+| ------ | ---------------- | ------------- | ------------------------------ |
+| GET    | `/api/posts`     | `listPosts`   | newest first                   |
+| GET    | `/api/posts/:id` | `getPost`     | 404 if missing                 |
+| POST   | `/api/posts`     | `createPost`  | 400 if title/content blank     |
+| PUT    | `/api/posts/:id` | `updatePost`  | 400 if blank, 404 if missing   |
+| DELETE | `/api/posts/:id` | `deletePost`  | 204 on success                 |
+
+`GET /api/health` → `{ "status": "ok" }`. Unknown `/api/*` routes → 404 JSON.
+
+### Data model (`server/src/db/schema.sql`)
+
+`posts`: `id` (PK, auto-increment), `title`, `content`, `author`
+(default `'Anonymous'`), `created_at`, `updated_at` (auto-updated).
+
+## Conventions
+
+- **ES modules everywhere.** Both packages use `"type": "module"`; use
+  `import`/`export`, not `require`.
+- **Raw parameterized SQL.** All queries go through the `pool` in
+  `server/src/db/pool.js` and use `?` placeholders — never string-interpolate
+  user input into SQL.
+- **Controllers own the SQL.** Route files only wire paths to handlers; query
+  logic and validation live in `controllers/`. Errors are passed to `next(err)`
+  and handled by the central error middleware in `index.js`.
+- **Frontend API access** goes through `client/src/api/posts.js` — don't call
+  `fetch` directly from components. It throws `Error(message)` on non-2xx so
+  callers can surface `err.message`.
+- **`PostForm` is shared** by create and edit pages; extend it rather than
+  duplicating form logic.
+- **Styling** is plain CSS in `client/src/index.css` using CSS variables. No CSS
+  framework or CSS-in-JS.
+- **Secrets** live only in `server/.env` (gitignored). Update `.env.example`
+  whenever you add a new required variable.
+
+## Validating changes
+
+There is no test suite or linter configured yet. Before committing, at minimum:
+
+- **Client:** `cd client && npm run build` must succeed.
+- **Server:** `cd server && node --check src/**/*.js` (or start it and hit
+  `/api/health`). Full CRUD requires a running MySQL.
+
+If you add tests or linting, wire them into the relevant `package.json`
+`scripts` and document the commands here.
 
 ## Git workflow
 
-- Default branch: `main`.
-- Do all work on a dedicated feature branch; do not commit directly to `main`.
-- Write clear, descriptive commit messages.
+- Default branch: `main`. Do work on a feature branch; don't commit to `main`.
+- Clear, descriptive commit messages.
 - Push with `git push -u origin <branch-name>`.
 - Open a pull request only when explicitly asked.
 
-## Maintaining this file
+## Keeping this file current
 
-This CLAUDE.md was created while the repo was an empty scaffold. **As soon as
-real code lands, update it** with:
-
-- the actual directory layout,
-- exact commands to install, run, build, lint, and test,
-- how to configure and connect to MySQL locally,
-- any conventions the team adopts (component structure, API design, migrations).
-
-Keep it concise and accurate — an out-of-date CLAUDE.md is worse than none.
+When you change the structure, add endpoints, introduce tooling (tests, lint,
+auth, migrations, Docker), or add tables/columns, **update this file and the
+README in the same change.** An out-of-date CLAUDE.md is worse than none.
